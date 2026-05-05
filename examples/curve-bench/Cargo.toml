@@ -1,0 +1,11 @@
+[package]
+name = "curve-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+svm-unit-test.workspace = true

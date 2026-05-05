@@ -1,0 +1,18 @@
+[package]
+name        = "svm-unit-test-macros"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+description = "Proc macro for svm-unit-test (#[svm_unit_test])."
+readme      = "../../README.md"
+keywords    = ["solana", "sbpf", "svm", "mollusk", "test"]
+categories  = ["development-tools::testing"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true

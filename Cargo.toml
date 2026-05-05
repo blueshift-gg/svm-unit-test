@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/svm-unit-test",
+    "crates/svm-unit-test-macros",
+    "examples/curve-bench",
+]
+exclude = [
+    "examples/curve-bench/target",
+]
+
+[workspace.package]
+version    = "0.1.0"
+edition    = "2024"
+license    = "MIT"
+repository = "https://github.com/blueshift/sbpf-unit-test"
+
+[workspace.dependencies]
+# `path` is used for local development; `version` is what gets published to
+# crates.io (cargo strips the path on `cargo publish`). Both required so the
+# workspace works pre- and post-publish.
+svm-unit-test         = { path = "crates/svm-unit-test",        version = "0.1.0" }
+svm-unit-test-macros  = { path = "crates/svm-unit-test-macros", version = "0.1.0" }
+
+syn         = { version = "2", features = ["full", "extra-traits"] }
+quote       = "1"
+proc-macro2 = "1"
+
+mollusk-svm       = "0.12.1-agave-4.0"
+solana-pubkey     = "3"
+solana-instruction = "3"
+solana-account    = "3"
+pathdiff          = "0.2"

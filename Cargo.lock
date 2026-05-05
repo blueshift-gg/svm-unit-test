@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "curve-bench"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "svm-unit-test",
 ]
@@ -3010,20 +3010,20 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svm-unit-test"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mollusk-svm",
  "pathdiff",
  "quote",
+ "solana-address 2.6.0",
  "solana-instruction",
- "solana-pubkey 4.2.0",
  "svm-unit-test-macros",
  "syn 2.0.117",
 ]
 
 [[package]]
 name = "svm-unit-test-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",

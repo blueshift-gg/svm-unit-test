@@ -27,7 +27,7 @@ pub use suite::ensure_suite_built;
 
 use mollusk_svm::{Mollusk, program::loader_keys::LOADER_V3};
 use solana_instruction::Instruction;
-use solana_pubkey::Pubkey;
+use solana_address::Address;
 
 #[derive(Debug, Clone)]
 pub struct RunReport {
@@ -40,7 +40,7 @@ pub struct RunReport {
 /// instruction data, and report compute units consumed. Panics on program
 /// failure.
 pub fn run(name: &str, elf: &[u8]) -> RunReport {
-    let program_id = Pubkey::new_unique();
+    let program_id = Address::new_unique();
 
     let mut mollusk = Mollusk::default();
     mollusk.add_program_with_loader_and_elf(&program_id, &LOADER_V3, elf);

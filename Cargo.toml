@@ -10,10 +10,10 @@ exclude = [
 ]
 
 [workspace.package]
-version    = "0.1.0"
+version    = "0.1.1"
 edition    = "2024"
 license    = "MIT"
-repository = "https://github.com/blueshift/sbpf-unit-test"
+repository = "https://github.com/blueshift-gg/svm-unit-test"
 
 [workspace.dependencies]
 # `path` is used for local development; `version` is what gets published to

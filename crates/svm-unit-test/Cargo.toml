@@ -15,7 +15,6 @@ svm-unit-test-macros.workspace = true
 mollusk-svm.workspace = true
 solana-pubkey.workspace = true
 solana-instruction.workspace = true
-solana-account.workspace = true
 pathdiff.workspace = true
 
 # Used at test runtime to parse the test file picked up via file!() and

@@ -3015,9 +3015,8 @@ dependencies = [
  "mollusk-svm",
  "pathdiff",
  "quote",
- "solana-account",
  "solana-instruction",
- "solana-pubkey 3.0.0",
+ "solana-pubkey 4.2.0",
  "svm-unit-test-macros",
  "syn 2.0.117",
 ]

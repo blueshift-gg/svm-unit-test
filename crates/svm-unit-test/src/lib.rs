@@ -26,7 +26,6 @@ pub use builder::build_suite;
 pub use suite::ensure_suite_built;
 
 use mollusk_svm::{Mollusk, program::loader_keys::LOADER_V3};
-use solana_account::Account;
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
 
@@ -47,9 +46,7 @@ pub fn run(name: &str, elf: &[u8]) -> RunReport {
     mollusk.add_program_with_loader_and_elf(&program_id, &LOADER_V3, elf);
 
     let instruction = Instruction::new_with_bytes(program_id, &[], vec![]);
-    let accounts: Vec<(Pubkey, Account)> = Vec::new();
-
-    let result = mollusk.process_instruction(&instruction, &accounts);
+    let result = mollusk.process_instruction(&instruction, &[]);
 
     if !result.program_result.is_ok() {
         panic!(

@@ -1,9 +1,13 @@
 //! Lazy SBPF compilation triggered by `#[svm_test]`.
 //!
-//! On the first test in a suite, this generates one tiny `#![no_std]` cdylib
-//! crate per test, shells out to `cargo build-sbf`, and copies the resulting
-//! `.so` into a content-addressed directory. Subsequent process runs hit the
-//! cache.
+//! On the first test in a process, this generates one tiny `#![no_std]`
+//! cdylib crate per test, shells out to `cargo build-sbf`, and copies the
+//! resulting `.so` into a stable per-suite directory. We do **not** content-
+//! cache: every fresh `cargo test` re-invokes `cargo build-sbf`, which uses
+//! its own incremental fingerprinting to detect changes in the test file or
+//! any path dependency (including the user's lib). That way edits to the
+//! underlying code always show up in the next test run instead of getting
+//! masked by a stale `.so`.
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -13,53 +17,45 @@ use std::{
     process::Command,
 };
 
-/// Build all programs in the suite if not already cached. Returns the
-/// directory containing `<name>.so` files.
+/// Build all programs in the suite and return the directory holding
+/// `<name>.so`.
+///
+/// `file` (the test file's `file!()` value) keys the suite directory so two
+/// integration test files in the same package don't trample each other's
+/// build artifacts. The directory itself is stable across `cargo test`
+/// invocations, so cargo's incremental cache inside it stays warm.
 ///
 /// `target_tmpdir` is `Some(env!("CARGO_TARGET_TMPDIR"))` for integration
 /// tests; falls back to `<manifest_dir>/target/svm-unit-tests/` otherwise.
 pub fn build_suite(
     source: &str,
     names: &[&str],
+    file: &str,
     target_tmpdir: Option<&str>,
     manifest_dir: &str,
     pkg_name: &str,
 ) -> PathBuf {
+    // Hash the *file path*, not the source — keeps the dir stable across
+    // edits so cargo can do an incremental rebuild rather than starting
+    // from scratch each time.
     let mut hasher = DefaultHasher::new();
-    source.hash(&mut hasher);
-    for n in names {
-        n.hash(&mut hasher);
-    }
-    pkg_name.hash(&mut hasher);
-    let suite_hash = format!("{:016x}", hasher.finish());
+    file.hash(&mut hasher);
+    let suite_id = format!("{:016x}", hasher.finish());
 
     let workspace_root = match target_tmpdir {
         Some(t) => PathBuf::from(t),
         None => PathBuf::from(manifest_dir).join("target").join("svm-unit-tests"),
     };
-    let work = workspace_root.join(format!("suite-{suite_hash}"));
+    let work = workspace_root.join(format!("suite-{suite_id}"));
     let so_dir = work.join("so");
-    let done = work.join(".done");
-
-    // The .done marker means "we successfully built every test in this suite
-    // for this exact source/names tuple before". We still let `cargo build-sbf`
-    // do its own incremental work below if the marker is missing — this short
-    // circuit just avoids re-running cargo when nothing in the suite changed.
-    if done.exists() && names.iter().all(|n| so_dir.join(format!("{n}.so")).exists()) {
-        return so_dir;
-    }
-
-    fs::create_dir_all(&so_dir).expect("create so dir");
     let build_dir = work.join("build");
-    let pkg_path = PathBuf::from(manifest_dir);
+    fs::create_dir_all(&so_dir).expect("create so dir");
 
+    let pkg_path = PathBuf::from(manifest_dir);
     for &name in names {
         build_one(&build_dir, &so_dir, name, source, &pkg_path, pkg_name);
     }
 
-    // Mark the suite ready. Best-effort across processes — we don't take a
-    // file lock; cargo's own target locking serializes the actual builds.
-    fs::write(&done, "").ok();
     so_dir
 }
 
@@ -81,6 +77,8 @@ fn build_one(
         .to_string()
         .replace('\\', "/");
 
+    // Write the manifest only if it would change — otherwise we touch its
+    // mtime on every test run and force cargo to re-evaluate fingerprints.
     let cargo_toml = format!(
         r#"[package]
 name = "{crate_name}"
@@ -104,7 +102,7 @@ panic = "abort"
 strip = "symbols"
 "#
     );
-    fs::write(crate_dir.join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
+    write_if_changed(&crate_dir.join("Cargo.toml"), &cargo_toml);
 
     let lib_rs = format!(
         r#"#![no_std]
@@ -122,11 +120,14 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
 }}
 "#
     );
-    fs::write(crate_dir.join("src").join("lib.rs"), lib_rs).expect("write lib.rs");
+    write_if_changed(&crate_dir.join("src").join("lib.rs"), &lib_rs);
 
     let manifest = crate_dir.join("Cargo.toml");
     let target_dir = crate_dir.join("target");
 
+    // Always invoke build-sbf — cargo's own fingerprinting decides whether
+    // to actually recompile. For an unchanged test, this is a sub-second
+    // no-op; for a changed lib path-dep, it rebuilds.
     let status = Command::new("cargo")
         .arg("build-sbf")
         .arg("--manifest-path")
@@ -144,13 +145,15 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
     );
 
     // build-sbf emits `<crate_name>.so`; the macro expects `<name>.so`.
-    // Idempotent: a parallel cargo-test process may have already renamed it.
     let produced = so_dir.join(format!("{crate_name}.so"));
     let wanted = so_dir.join(format!("{name}.so"));
     if produced != wanted && produced.exists() {
+        // fs::rename replaces the destination on Unix, which is what we
+        // want — the new build supersedes any stale prior artifact.
         fs::rename(&produced, &wanted).unwrap_or_else(|e| {
             if wanted.exists() {
-                // Lost a race; either side has a valid .so.
+                // Lost a race with a parallel cargo-test process; either
+                // side's .so is valid. Drop the duplicate.
                 let _ = fs::remove_file(&produced);
             } else {
                 panic!(
@@ -166,4 +169,16 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
         "expected `{}` to exist after build-sbf",
         wanted.display(),
     );
+}
+
+/// Write `contents` to `path` only if the file is missing or its current
+/// contents differ. Avoids bumping mtime on no-op runs, which would defeat
+/// `cargo build-sbf`'s fingerprinting.
+fn write_if_changed(path: &Path, contents: &str) {
+    if let Ok(existing) = fs::read_to_string(path) {
+        if existing == contents {
+            return;
+        }
+    }
+    fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }

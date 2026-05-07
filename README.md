@@ -101,14 +101,15 @@ Each `#[svm_test]` becomes a real `#[test]`. Other test attributes
 - `use svm_unit_test::svm_test;` is auto-stripped from the SBPF source.
   Other `use` statements pass through verbatim and must resolve in the SBPF
   crate.
-- All `fn`s with `#[svm_test]` in a file form a single suite that
-  shares one cache entry, keyed by the file's content hash.
-- The cache is content-addressed by the test file. Editing a transitive
-  dependency without touching the test file won't invalidate the cache —
-  if you suspect a stale build, `rm -rf target/tmp/suite-*` to force a
-  rebuild.
+- All `fn`s with `#[svm_test]` in a file share one suite directory under
+  `target/tmp/suite-<hash-of-file-path>/`. Within a single test process the
+  suite is built exactly once via a `OnceLock`.
+- Every `cargo test` re-invokes `cargo build-sbf` and lets cargo's own
+  fingerprinting decide whether to recompile. Editing the test file or any
+  path-dep (your lib, transitive crates) is detected and produces a fresh
+  `.so`; an unchanged tree finishes in well under a second.
 - First run pulls in the Solana SDK and BPF toolchain, so it's slow. After
-  that, `cargo build-sbf` does its own incremental work.
+  that, `cargo build-sbf` is incremental.
 - `mollusk-svm` is pinned at `0.12.1-agave-4.0`. Using a different SVM
   feature-set requires a fork.
 

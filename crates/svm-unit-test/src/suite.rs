@@ -51,6 +51,7 @@ pub fn ensure_suite_built(
         let path = crate::build_suite(
             &cleaned_source,
             &names_refs,
+            file,
             target_tmpdir,
             manifest_dir,
             pkg_name,

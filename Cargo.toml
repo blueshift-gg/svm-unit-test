@@ -10,17 +10,20 @@ exclude = [
 ]
 
 [workspace.package]
-version    = "0.1.4"
+version    = "0.1.5"
 edition    = "2024"
 license    = "MIT"
 repository = "https://github.com/blueshift-gg/svm-unit-test"
 
 [workspace.dependencies]
 # `path` is used for local development; `version` is what gets published to
-# crates.io (cargo strips the path on `cargo publish`). Both required so the
-# workspace works pre- and post-publish.
-svm-unit-test         = { path = "crates/svm-unit-test",        version = "0.1.0" }
-svm-unit-test-macros  = { path = "crates/svm-unit-test-macros", version = "0.1.0" }
+# crates.io (cargo strips the path on `cargo publish`). The `=` prefix locks
+# the runtime to the matching macros version — without it the resolver is
+# free to pair a fresh runtime with a stale published macros (or vice versa)
+# and you get "cannot find function `…`" errors in macro-expanded code.
+# Bump these in lockstep with workspace.package.version on every release.
+svm-unit-test         = { path = "crates/svm-unit-test",        version = "=0.1.5" }
+svm-unit-test-macros  = { path = "crates/svm-unit-test-macros", version = "=0.1.5" }
 
 syn         = { version = "2", features = ["full", "extra-traits"] }
 quote       = "1"

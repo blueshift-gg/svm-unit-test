@@ -1,11 +1,11 @@
 //! `#[svm_test]` proc macro.
 //!
 //! Annotate any free fn with `#[svm_test]`. On `cargo test` it becomes a
-//! regular `#[test]` that, on first run, calls
-//! [`svm_unit_test::ensure_suite_built`] — which reads the test file, parses
-//! it to find every `#[svm_test]` sibling plus their surrounding
-//! `use`s/helpers, and drives one `cargo build-sbf` per fn. The test then
-//! executes its own `.so` in Mollusk and reports CUs.
+//! regular `#[test]` that, on first invocation, calls
+//! [`svm_unit_test::ensure_test_built`] — which lazily compiles *just this
+//! test's* SBPF program and returns the path to its `.so`. Sibling tests
+//! that aren't selected (e.g. `cargo test add_mod_n` only runs `add_mod_n`)
+//! are never compiled.
 //!
 //! ```ignore
 //! use svm_unit_test::svm_test;
@@ -40,15 +40,15 @@ pub fn svm_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #(#attrs)*
         #[test]
         fn #name() {
-            let dir = ::svm_unit_test::ensure_suite_built(
+            let so_path = ::svm_unit_test::ensure_test_built(
                 ::std::file!(),
+                #name_str,
                 ::std::env!("CARGO_MANIFEST_DIR"),
                 ::std::env!("CARGO_PKG_NAME"),
                 ::std::option_env!("CARGO_TARGET_TMPDIR"),
             );
-            let path = dir.join(::std::concat!(#name_str, ".so"));
-            let elf = ::std::fs::read(&path)
-                .unwrap_or_else(|e| ::std::panic!("read {}: {}", path.display(), e));
+            let elf = ::std::fs::read(so_path)
+                .unwrap_or_else(|e| ::std::panic!("read {}: {}", so_path.display(), e));
             ::svm_unit_test::run(#name_str, &elf);
         }
     }

@@ -1,10 +1,10 @@
 //! Runtime side of the `svm-unit-test` framework.
 //!
 //! Re-exports [`svm_test`] and provides:
-//!  * [`ensure_suite_built`] — called by the macro on first test run; parses
-//!    the test source to find every `#[svm_test]` sibling and triggers a
-//!    one-shot build of the whole file's worth of SBPF programs.
-//!  * [`build_suite`] — the lower-level builder used by `ensure_suite_built`.
+//!  * [`ensure_test_built`] — called by the macro on first invocation of
+//!    each `#[svm_test]`; lazily compiles **just that one test's** SBPF
+//!    program and returns the path to its `.so`. Sibling tests aren't
+//!    touched unless they're also run.
 //!  * [`run`] — loads a compiled ELF into Mollusk and reports CU usage.
 //!
 //! ```ignore
@@ -20,10 +20,9 @@
 
 pub use svm_unit_test_macros::svm_test;
 
-mod builder;
+pub(crate) mod builder;
 mod suite;
-pub use builder::build_suite;
-pub use suite::ensure_suite_built;
+pub use suite::ensure_test_built;
 
 use mollusk_svm::{Mollusk, program::loader_keys::LOADER_V3};
 use solana_instruction::Instruction;

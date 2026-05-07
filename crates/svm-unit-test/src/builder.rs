@@ -1,13 +1,12 @@
 //! Lazy SBPF compilation triggered by `#[svm_test]`.
 //!
-//! On the first test in a process, this generates one tiny `#![no_std]`
-//! cdylib crate per test, shells out to `cargo build-sbf`, and copies the
-//! resulting `.so` into a stable per-suite directory. We do **not** content-
-//! cache: every fresh `cargo test` re-invokes `cargo build-sbf`, which uses
-//! its own incremental fingerprinting to detect changes in the test file or
-//! any path dependency (including the user's lib). That way edits to the
-//! underlying code always show up in the next test run instead of getting
-//! masked by a stale `.so`.
+//! Each test gets its own `#![no_std]` cdylib crate generated under
+//! `target/tmp/suite-<hash-of-file-path>/build/<test-name>/`. Before
+//! shelling out to `cargo build-sbf` we stat-compare the existing `.so`
+//! against the generated lib.rs/Cargo.toml plus the user's package source
+//! tree — if nothing is newer than the `.so`, the spawn is skipped entirely.
+//! This keeps the no-op path on the order of milliseconds rather than
+//! hundreds.
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -15,29 +14,24 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
+    time::SystemTime,
 };
 
-/// Build all programs in the suite and return the directory holding
-/// `<name>.so`.
-///
-/// `file` (the test file's `file!()` value) keys the suite directory so two
-/// integration test files in the same package don't trample each other's
-/// build artifacts. The directory itself is stable across `cargo test`
-/// invocations, so cargo's incremental cache inside it stays warm.
-///
-/// `target_tmpdir` is `Some(env!("CARGO_TARGET_TMPDIR"))` for integration
-/// tests; falls back to `<manifest_dir>/target/svm-unit-tests/` otherwise.
-pub fn build_suite(
+/// Build (if needed) and return the path to `<name>.so` for the given
+/// `#[svm_test]` fn. Idempotent and concurrency-safe; the caller (suite.rs)
+/// further memoizes per `(file, name)` so this is invoked at most once per
+/// test per process.
+pub fn build_one_test(
     source: &str,
-    names: &[&str],
+    name: &str,
     file: &str,
     target_tmpdir: Option<&str>,
     manifest_dir: &str,
     pkg_name: &str,
 ) -> PathBuf {
-    // Hash the *file path*, not the source — keeps the dir stable across
-    // edits so cargo can do an incremental rebuild rather than starting
-    // from scratch each time.
+    // Hash the *file path*, not the source — the suite directory needs to
+    // be stable across cargo runs so cargo's incremental fingerprinting
+    // inside it stays warm.
     let mut hasher = DefaultHasher::new();
     file.hash(&mut hasher);
     let suite_id = format!("{:016x}", hasher.finish());
@@ -52,11 +46,9 @@ pub fn build_suite(
     fs::create_dir_all(&so_dir).expect("create so dir");
 
     let pkg_path = PathBuf::from(manifest_dir);
-    for &name in names {
-        build_one(&build_dir, &so_dir, name, source, &pkg_path, pkg_name);
-    }
+    build_one(&build_dir, &so_dir, name, source, &pkg_path, pkg_name);
 
-    so_dir
+    so_dir.join(format!("{name}.so"))
 }
 
 fn build_one(
@@ -77,8 +69,6 @@ fn build_one(
         .to_string()
         .replace('\\', "/");
 
-    // Write the manifest only if it would change — otherwise we touch its
-    // mtime on every test run and force cargo to re-evaluate fingerprints.
     let cargo_toml = format!(
         r#"[package]
 name = "{crate_name}"
@@ -122,12 +112,14 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
     );
     write_if_changed(&crate_dir.join("src").join("lib.rs"), &lib_rs);
 
+    let so_path = so_dir.join(format!("{name}.so"));
+    if !needs_rebuild(&so_path, &crate_dir, pkg_path) {
+        return;
+    }
+
     let manifest = crate_dir.join("Cargo.toml");
     let target_dir = crate_dir.join("target");
 
-    // Always invoke build-sbf — cargo's own fingerprinting decides whether
-    // to actually recompile. For an unchanged test, this is a sub-second
-    // no-op; for a changed lib path-dep, it rebuilds.
     let status = Command::new("cargo")
         .arg("build-sbf")
         .arg("--manifest-path")
@@ -145,35 +137,98 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
     );
 
     // build-sbf emits `<crate_name>.so`; the macro expects `<name>.so`.
+    // fs::rename replaces the destination on Unix, which is what we want
+    // — the new build supersedes any stale prior artifact.
     let produced = so_dir.join(format!("{crate_name}.so"));
-    let wanted = so_dir.join(format!("{name}.so"));
-    if produced != wanted && produced.exists() {
-        // fs::rename replaces the destination on Unix, which is what we
-        // want — the new build supersedes any stale prior artifact.
-        fs::rename(&produced, &wanted).unwrap_or_else(|e| {
-            if wanted.exists() {
-                // Lost a race with a parallel cargo-test process; either
-                // side's .so is valid. Drop the duplicate.
+    if produced != so_path && produced.exists() {
+        fs::rename(&produced, &so_path).unwrap_or_else(|e| {
+            if so_path.exists() {
+                // Lost a race with a parallel cargo-test process; drop the
+                // duplicate and use the existing one.
                 let _ = fs::remove_file(&produced);
             } else {
                 panic!(
                     "rename {} -> {}: {e}",
                     produced.display(),
-                    wanted.display(),
+                    so_path.display(),
                 );
             }
         });
     }
     assert!(
-        wanted.exists(),
+        so_path.exists(),
         "expected `{}` to exist after build-sbf",
-        wanted.display(),
+        so_path.display(),
     );
 }
 
-/// Write `contents` to `path` only if the file is missing or its current
-/// contents differ. Avoids bumping mtime on no-op runs, which would defeat
-/// `cargo build-sbf`'s fingerprinting.
+/// Decide whether to invoke `cargo build-sbf` at all. We approximate cargo's
+/// own fingerprint check with mtimes:
+///   * the `.so` must exist;
+///   * the generated Cargo.toml + lib.rs must not be newer than it;
+///   * nothing in the user's package source tree (Cargo.toml + src/**) may
+///     be newer than it.
+///
+/// Misses transitive dep changes that cargo would catch (e.g. a Cargo.lock
+/// bump in another workspace member). For those, run `cargo clean` or just
+/// touch the test file. The trade-off pays for itself: the no-op path drops
+/// from a multi-hundred-ms `cargo build-sbf` spawn to a few stat() calls.
+fn needs_rebuild(so_path: &Path, crate_dir: &Path, pkg_path: &Path) -> bool {
+    let Some(so_mtime) = mtime(so_path) else {
+        return true;
+    };
+
+    for f in [
+        crate_dir.join("Cargo.toml"),
+        crate_dir.join("src").join("lib.rs"),
+    ] {
+        if mtime(&f).is_some_and(|m| m > so_mtime) {
+            return true;
+        }
+    }
+
+    if mtime(&pkg_path.join("Cargo.toml")).is_some_and(|m| m > so_mtime) {
+        return true;
+    }
+
+    let src = pkg_path.join("src");
+    if newest_mtime_under(&src).is_some_and(|m| m > so_mtime) {
+        return true;
+    }
+
+    false
+}
+
+fn mtime(p: &Path) -> Option<SystemTime> {
+    p.metadata().ok()?.modified().ok()
+}
+
+fn newest_mtime_under(dir: &Path) -> Option<SystemTime> {
+    let mut newest: Option<SystemTime> = None;
+    walk_files(dir, &mut |path| {
+        if let Some(m) = mtime(path) {
+            newest = Some(newest.map_or(m, |n| n.max(m)));
+        }
+    });
+    newest
+}
+
+fn walk_files(dir: &Path, cb: &mut dyn FnMut(&Path)) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_files(&path, cb);
+        } else {
+            cb(&path);
+        }
+    }
+}
+
+/// Write `contents` to `path` only if it would change. Avoids bumping
+/// mtime on no-op runs (which would defeat our `needs_rebuild` check).
 fn write_if_changed(path: &Path, contents: &str) {
     if let Ok(existing) = fs::read_to_string(path) {
         if existing == contents {

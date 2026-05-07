@@ -1,10 +1,17 @@
-//! Per-file suite discovery.
+//! Per-(file, test) discovery + lazy build dispatch.
 //!
-//! The macro hands us `file!()` (a path that's typically relative to the
-//! workspace root) plus the package's `CARGO_MANIFEST_DIR`. We walk up from
-//! the manifest dir until we find the file, read it, parse it once per
-//! process to discover every `#[svm_test]` sibling, then drive
-//! [`crate::build_suite`] to compile one `.so` per test fn.
+//! The macro hands us `file!()` (typically workspace-root-relative) plus the
+//! specific test `name` and the package's cargo env. We:
+//!   1. find the file by walking up from `CARGO_MANIFEST_DIR` until
+//!      `<dir>/<file>` resolves;
+//!   2. parse it once per process to extract every `#[svm_test]` sibling and
+//!      the surrounding `use`s/helpers (memoized per file);
+//!   3. trigger [`crate::build_one_test`] for *just this test* (memoized per
+//!      `(file, name)` pair so parallel sibling tests in the same process
+//!      don't double-build).
+//!
+//! This means `cargo test add_mod_n` only ever compiles `add_mod_n.so`; its
+//! sibling tests in the same file are never built unless they're also run.
 
 use std::{
     collections::HashMap,
@@ -15,24 +22,61 @@ use std::{
 
 use quote::ToTokens;
 
-/// Build (or return the cached path of) all SBPF programs for the file the
-/// `#[svm_test]` macro was expanded in.
+struct ParsedFile {
+    cleaned_source: String,
+}
+
+/// Build (or return the cached path of) the SBPF program for the
+/// `#[svm_test]` named `name` defined in `file`. Returns the absolute path
+/// to its `.so`.
 ///
-/// Thread-safe: a per-file `OnceLock` ensures the build runs exactly once
-/// per process even when many sibling `#[test]`s race in parallel; later
-/// callers block on the same `OnceLock` and reuse its result.
-pub fn ensure_suite_built(
+/// Thread-safe: a per-`(file, name)` `OnceLock` ensures the build happens
+/// exactly once per process even when many sibling `#[test]`s race in
+/// parallel.
+pub fn ensure_test_built(
     file: &'static str,
+    name: &'static str,
     manifest_dir: &str,
     pkg_name: &str,
     target_tmpdir: Option<&str>,
 ) -> &'static Path {
-    type SuiteCell = OnceLock<&'static Path>;
-    static REGISTRY: OnceLock<Mutex<HashMap<&'static str, Arc<SuiteCell>>>> = OnceLock::new();
+    type Cell = OnceLock<&'static Path>;
+    type Reg = HashMap<(&'static str, &'static str), Arc<Cell>>;
+    static REGISTRY: OnceLock<Mutex<Reg>> = OnceLock::new();
     let registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
 
-    let cell: Arc<SuiteCell> = {
-        let mut guard = registry.lock().expect("suite registry poisoned");
+    let cell: Arc<Cell> = {
+        let mut guard = registry.lock().expect("svm_test registry poisoned");
+        guard
+            .entry((file, name))
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone()
+    };
+
+    *cell.get_or_init(|| {
+        let parsed = parse_file_cached(file, manifest_dir);
+        let path = crate::builder::build_one_test(
+            &parsed.cleaned_source,
+            name,
+            file,
+            target_tmpdir,
+            manifest_dir,
+            pkg_name,
+        );
+        Box::leak(path.into_boxed_path())
+    })
+}
+
+/// Parse a test file once per process. Multiple `#[svm_test]` siblings in
+/// the same file all share the result.
+fn parse_file_cached(file: &'static str, manifest_dir: &str) -> &'static ParsedFile {
+    type Cell = OnceLock<&'static ParsedFile>;
+    type Reg = HashMap<&'static str, Arc<Cell>>;
+    static CACHE: OnceLock<Mutex<Reg>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    let cell: Arc<Cell> = {
+        let mut guard = cache.lock().expect("svm_test parse cache poisoned");
         guard
             .entry(file)
             .or_insert_with(|| Arc::new(OnceLock::new()))
@@ -43,27 +87,13 @@ pub fn ensure_suite_built(
         let abs = resolve_source_path(manifest_dir, file);
         let source = fs::read_to_string(&abs)
             .unwrap_or_else(|e| panic!("svm_test: read {}: {e}", abs.display()));
-
-        let (cleaned_source, names) = parse_suite(&source)
+        let cleaned_source = parse_suite(&source)
             .unwrap_or_else(|e| panic!("svm_test: parse {}: {e}", abs.display()));
-        let names_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-
-        let path = crate::build_suite(
-            &cleaned_source,
-            &names_refs,
-            file,
-            target_tmpdir,
-            manifest_dir,
-            pkg_name,
-        );
-        Box::leak(path.into_boxed_path())
+        Box::leak(Box::new(ParsedFile { cleaned_source }))
     })
 }
 
-/// `file!()` returns a path relative to whatever directory cargo invoked
-/// rustc from — workspace root for workspace members, package root for
-/// standalone packages, sometimes absolute. Walk up from `CARGO_MANIFEST_DIR`
-/// until we find a directory where `<dir>/<file>` exists.
+/// Walk up from `CARGO_MANIFEST_DIR` until `<dir>/<file>` exists.
 fn resolve_source_path(start_dir: &str, file: &str) -> PathBuf {
     let file_path = Path::new(file);
     if file_path.is_absolute() {
@@ -87,15 +117,12 @@ fn resolve_source_path(start_dir: &str, file: &str) -> PathBuf {
     }
 }
 
-/// Parse the raw test source. Returns:
-///   * the source string handed to `cargo build-sbf` — same items, with the
-///     `#[svm_test]` attribute stripped from each test fn and any
-///     `use svm_unit_test::*;` removed (the SBPF crate doesn't depend on us);
-///   * the names of the discovered `#[svm_test]` fns.
-fn parse_suite(source: &str) -> Result<(String, Vec<String>), syn::Error> {
+/// Build the source string handed to `cargo build-sbf`: same items, with
+/// `#[svm_test]` attributes stripped from each test fn and any
+/// `use svm_unit_test::*;` removed (the SBPF crate doesn't depend on us).
+fn parse_suite(source: &str) -> Result<String, syn::Error> {
     let file: syn::File = syn::parse_str(source)?;
     let mut out_items: Vec<String> = Vec::new();
-    let mut names: Vec<String> = Vec::new();
 
     for item in &file.items {
         match item {
@@ -107,7 +134,6 @@ fn parse_suite(source: &str) -> Result<(String, Vec<String>), syn::Error> {
             syn::Item::Fn(f) => {
                 let mut clone = f.clone();
                 if let Some(idx) = clone.attrs.iter().position(is_svm_test_attr) {
-                    names.push(f.sig.ident.to_string());
                     clone.attrs.remove(idx);
                 }
                 out_items.push(clone.to_token_stream().to_string());
@@ -116,7 +142,7 @@ fn parse_suite(source: &str) -> Result<(String, Vec<String>), syn::Error> {
         }
     }
 
-    Ok((out_items.join("\n"), names))
+    Ok(out_items.join("\n"))
 }
 
 fn is_svm_test_attr(a: &syn::Attribute) -> bool {

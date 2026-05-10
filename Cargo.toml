@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/svm-unit-test",
     "crates/svm-unit-test-macros",
+    "crates/svm-unit-test-types",
     "examples/curve-bench",
 ]
 exclude = [
@@ -24,6 +25,7 @@ repository = "https://github.com/blueshift-gg/svm-unit-test"
 # Bump these in lockstep with workspace.package.version on every release.
 svm-unit-test         = { path = "crates/svm-unit-test",        version = "=0.1.5" }
 svm-unit-test-macros  = { path = "crates/svm-unit-test-macros", version = "=0.1.5" }
+svm-unit-test-types   = { path = "crates/svm-unit-test-types",  version = "=0.1.5" }
 
 syn         = { version = "2", features = ["full", "extra-traits"] }
 quote       = "1"

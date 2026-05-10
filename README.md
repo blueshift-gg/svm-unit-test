@@ -78,6 +78,105 @@ cargo test
 Each `#[svm_test]` becomes a real `#[test]`. Other test attributes
 (e.g. `#[ignore]`, `#[should_panic]`) work as usual.
 
+## Parameterised benchmarks with `#[svm_harness]`
+
+`#[svm_test]` runs a fixed body. When you want to feed the same SBPF
+program different inputs without recompiling, use `#[svm_harness]`:
+
+```rust
+use core::hint::black_box;
+use my_lib::Curve;
+use svm_unit_test::svm_harness;
+
+#[repr(C)]
+struct AddInputs {
+    a: [u64; 4],
+    b: [u64; 4],
+}
+
+#[svm_harness]
+fn add_mod_n_harness(input: &AddInputs) {
+    Curve::add_mod_n(black_box(&input.a), black_box(&input.b));
+}
+
+#[test]
+fn add_mod_n_zero() {
+    add_mod_n_harness(&AddInputs { a: [0; 4], b: [0; 4] });
+}
+
+#[test]
+fn add_mod_n_wrap() {
+    add_mod_n_harness(&AddInputs { a: [u64::MAX; 4], b: [1, 0, 0, 0] });
+}
+```
+
+The macro replaces the annotated fn with a host runner of the same
+signature — call it from any `#[test]` (or any caller that has the
+input) to push that input through the SBPF program and get a CU report.
+
+### How the input gets in
+
+Each `#[test]` serialises `&T` to bytes (one `from_raw_parts` over the
+reference); Mollusk hands those bytes to the program as instruction
+data; the SBPF entrypoint reinterprets the instruction-data pointer
+back as `&T` directly — no copy, no decoder.
+
+### Requirements on `T`
+
+- `#[repr(C)]` — `T`'s in-memory layout *is* the wire format.
+- `align_of::<T>() ≤ 8` — Solana's instruction-data buffer is 8-byte
+  aligned, so the pointer reinterpret is sound for any reasonable type.
+- One parameter only, of the form `&T` (not `T`, not `&mut T`).
+
+### Non-`repr(C)` inputs: bring your own encoding
+
+If your input doesn't fit those constraints — variable-length data, a
+type from a crate you can't re-decorate `#[repr(C)]`, or a wire format
+you control (borsh, bincode, manual layout) — wrap it in a `#[repr(C)]`
+buffer and do the encode/decode at the boundaries yourself:
+
+```rust
+use svm_unit_test::svm_harness;
+
+#[repr(C)]
+struct Encoded {
+    bytes: [u8; 256],
+    len: u32,
+}
+
+impl Encoded {
+    fn pack(v: &MyType) -> Self {
+        let bytes = my_serialise(v); // wincode, borsh, bincode, manual, anything
+        let mut buf = [0u8; 256];
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Self { bytes: buf, len: bytes.len() as u32 }
+    }
+}
+
+#[svm_harness]
+fn bench(input: &Encoded) {
+    let value = my_deserialise(&input.bytes[..input.len as usize]);
+    // ... use `value`
+}
+
+#[test]
+fn t() {
+    bench(&Encoded::pack(&my_value));
+}
+```
+
+For simple variable-length cases, `&[u8; N]` works directly without a
+wrapper struct (fixed-size arrays are already `#[repr(C)]`).
+
+**A note on CUs:** the framework's zero-copy reinterpret still applies
+to the wire buffer (`&Encoded` lands as a register-passed reference,
+not a copy). But `my_deserialise` runs inside the SBPF program and its
+cost is counted in the CU report — that's intentional. If your real
+production code path includes deserialisation, you want to measure it;
+if it doesn't, do the decoding host-side and pass the already-decoded
+value as a `#[repr(C)]` struct so the harness body only measures the
+work you care about.
+
 ## How it works
 
 1. The `#[svm_test]` proc macro emits a `#[test]` that, on first run in
@@ -98,10 +197,12 @@ Each `#[svm_test]` becomes a real `#[test]`. Other test attributes
 
 - The user's lib must build for `sbf-solana-solana` — i.e. `#![no_std]`-clean
   for the path the tests exercise.
-- `use svm_unit_test::svm_test;` is auto-stripped from the SBPF source.
-  Other `use` statements pass through verbatim and must resolve in the SBPF
-  crate.
-- All `fn`s with `#[svm_test]` in a file share one suite directory under
+- `use` statements pass through into the SBPF source verbatim and must
+  resolve there. `svm_unit_test::*` resolves on both sides via a package
+  rename in the generated `Cargo.toml`. `#[test]` fns and
+  `extern crate` items are dropped on the way in (host-only by definition).
+- All `fn`s with `#[svm_test]` / `#[svm_harness]` in a file share one
+  suite directory under
   `target/tmp/suite-<hash-of-file-path>/`. Within a single test process the
   suite is built exactly once via a `OnceLock`.
 - Every `cargo test` re-invokes `cargo build-sbf` and lets cargo's own
@@ -116,8 +217,9 @@ Each `#[svm_test]` becomes a real `#[test]`. Other test attributes
 ## Workspace layout
 
 ```
-crates/svm-unit-test/         # runtime: macro re-export, Mollusk runner, suite builder
-crates/svm-unit-test-macros/  # proc macro #[svm_test]
+crates/svm-unit-test/         # runtime: Mollusk runner, suite builder, host re-exports
+crates/svm-unit-test-macros/  # proc macros #[svm_test] / #[svm_harness]
+crates/svm-unit-test-types/   # internal no_std glue shared with the generated SBPF crates
 examples/curve-bench/         # toy 256-bit add-mod-n bench
 ```
 

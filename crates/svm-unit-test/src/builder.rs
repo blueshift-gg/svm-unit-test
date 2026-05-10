@@ -1,4 +1,4 @@
-//! Lazy SBPF compilation triggered by `#[svm_test]`.
+//! Lazy SBPF compilation triggered by `#[svm_test]` / `#[svm_harness]`.
 //!
 //! Each test gets its own `#![no_std]` cdylib crate generated under
 //! `target/tmp/suite-<hash-of-file-path>/build/<test-name>/`. Before
@@ -28,6 +28,7 @@ pub fn build_one_test(
     target_tmpdir: Option<&str>,
     manifest_dir: &str,
     pkg_name: &str,
+    input_type: Option<&str>,
 ) -> PathBuf {
     // Hash the *file path*, not the source — the suite directory needs to
     // be stable across cargo runs so cargo's incremental fingerprinting
@@ -46,7 +47,7 @@ pub fn build_one_test(
     fs::create_dir_all(&so_dir).expect("create so dir");
 
     let pkg_path = PathBuf::from(manifest_dir);
-    build_one(&build_dir, &so_dir, name, source, &pkg_path, pkg_name);
+    build_one(&build_dir, &so_dir, name, source, &pkg_path, pkg_name, input_type);
 
     so_dir.join(format!("{name}.so"))
 }
@@ -58,17 +59,21 @@ fn build_one(
     source: &str,
     pkg_path: &Path,
     pkg_name: &str,
+    input_type: Option<&str>,
 ) {
     let crate_name = format!("svm_test_{name}");
     let crate_dir = build_dir.join(name);
     fs::create_dir_all(crate_dir.join("src")).expect("create per-test crate dir");
 
-    let rel_pkg = pathdiff::diff_paths(pkg_path, &crate_dir)
-        .expect("relative path to user package")
-        .display()
-        .to_string()
-        .replace('\\', "/");
+    let rel_pkg = rel_path(pkg_path, &crate_dir);
+    let rel_types = rel_path(Path::new(crate::TYPES_CRATE_DIR), &crate_dir);
 
+    // Two deps:
+    //   * the user's crate, so test bodies can reference its items;
+    //   * `svm-unit-test-types` aliased as `svm-unit-test`, so any
+    //     `use svm_unit_test::*` lines in the user's source resolve on
+    //     the SBPF side too (the aliased crate exposes the same
+    //     `svm_test`/`svm_harness` re-exports as the host crate).
     let cargo_toml = format!(
         r#"[package]
 name = "{crate_name}"
@@ -80,6 +85,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 {pkg_name} = {{ path = "{rel_pkg}" }}
+svm-unit-test = {{ package = "svm-unit-test-types", path = "{rel_types}", default-features = false }}
 
 [workspace]
 
@@ -94,6 +100,23 @@ strip = "symbols"
     );
     write_if_changed(&crate_dir.join("Cargo.toml"), &cargo_toml);
 
+    // Entrypoint shape depends on whether this is a `#[svm_test]`
+    // (zero-arg user fn) or a `#[svm_harness]` (single-arg user fn).
+    //
+    // The harness contract requires the param to be `&T`, so we synthesize
+    // the reference via a pointer cast — `*const _` is inferred to
+    // `*const T` from the user fn's signature, and `&*...` produces `&T`
+    // without copying. 
+    //
+    // SAFETY: relies on the host runner having placed `size_of::<T>()`
+    // bytes at `_ix_data` matching `T`'s in-memory representation, and on
+    // `_ix_data` being aligned for `T`. Solana's instruction-data buffer
+    // is 8-byte aligned, so any `T` with `align ≤ 8` is fine.
+    let call = match input_type {
+        None => format!("{name}();"),
+        Some(_) => format!("unsafe {{ {name}(&*_ix_data.cast()); }}"),
+    };
+
     let lib_rs = format!(
         r#"#![no_std]
 #![allow(unused_imports, dead_code)]
@@ -104,8 +127,8 @@ fn _svm_test_panic(_: &core::panic::PanicInfo) -> ! {{ loop {{}} }}
 {source}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
-    {name}();
+pub extern "C" fn entrypoint(_input: *mut u8, _ix_data: *const u8) -> u64 {{
+    {call}
     0
 }}
 "#
@@ -197,6 +220,14 @@ fn needs_rebuild(so_path: &Path, crate_dir: &Path, pkg_path: &Path) -> bool {
     }
 
     false
+}
+
+fn rel_path(target: &Path, from: &Path) -> String {
+    pathdiff::diff_paths(target, from)
+        .expect("compute relative path")
+        .display()
+        .to_string()
+        .replace('\\', "/")
 }
 
 fn mtime(p: &Path) -> Option<SystemTime> {

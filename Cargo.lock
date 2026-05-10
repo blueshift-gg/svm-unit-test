@@ -3018,6 +3018,7 @@ dependencies = [
  "solana-address 2.6.0",
  "solana-instruction",
  "svm-unit-test-macros",
+ "svm-unit-test-types",
  "syn 2.0.117",
 ]
 
@@ -3028,6 +3029,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "svm-unit-test-types"
+version = "0.1.5"
+dependencies = [
+ "svm-unit-test-macros",
 ]
 
 [[package]]

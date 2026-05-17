@@ -38,7 +38,9 @@ pub fn build_one_test(
 
     let workspace_root = match target_tmpdir {
         Some(t) => PathBuf::from(t),
-        None => PathBuf::from(manifest_dir).join("target").join("svm-unit-tests"),
+        None => PathBuf::from(manifest_dir)
+            .join("target")
+            .join("svm-unit-tests"),
     };
     let work = workspace_root.join(format!("suite-{suite_id}"));
     let so_dir = work.join("so");
@@ -97,6 +99,48 @@ strip = "symbols"
     let lib_rs = format!(
         r#"#![no_std]
 #![allow(unused_imports, dead_code)]
+
+const HEAP_START_ADDRESS: usize = 0x3000_0000;
+const HEAP_LENGTH: usize = 32 * 1024;
+
+struct SvmTestBumpAlloc {{
+    start: usize,
+    len: usize,
+}}
+
+impl SvmTestBumpAlloc {{
+    const unsafe fn with_fixed_address_range(start: usize, len: usize) -> Self {{
+        Self {{ start, len }}
+    }}
+}}
+
+unsafe impl core::alloc::GlobalAlloc for SvmTestBumpAlloc {{
+    #[inline]
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {{
+        let pos_ptr = self.start as *mut usize;
+        let mut pos = unsafe {{ *pos_ptr }};
+        if pos == 0 {{
+            pos = self.start + self.len;
+        }}
+        pos = pos.saturating_sub(layout.size());
+        pos &= !(layout.align().wrapping_sub(1));
+        if pos < self.start + core::mem::size_of::<usize>() {{
+            return core::ptr::null_mut();
+        }}
+        unsafe {{
+            *pos_ptr = pos;
+        }}
+        pos as *mut u8
+    }}
+
+    #[inline]
+    unsafe fn dealloc(&self, _: *mut u8, _: core::alloc::Layout) {{}}
+}}
+
+#[global_allocator]
+static SVM_TEST_HEAP: SvmTestBumpAlloc = unsafe {{
+    SvmTestBumpAlloc::with_fixed_address_range(HEAP_START_ADDRESS, HEAP_LENGTH)
+}};
 
 #[panic_handler]
 fn _svm_test_panic(_: &core::panic::PanicInfo) -> ! {{ loop {{}} }}

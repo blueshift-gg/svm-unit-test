@@ -22,8 +22,8 @@ repository = "https://github.com/blueshift-gg/svm-unit-test"
 # free to pair a fresh runtime with a stale published macros (or vice versa)
 # and you get "cannot find function `…`" errors in macro-expanded code.
 # Bump these in lockstep with workspace.package.version on every release.
-svm-unit-test         = { path = "crates/svm-unit-test",        version = "=0.1.5" }
-svm-unit-test-macros  = { path = "crates/svm-unit-test-macros", version = "=0.1.5" }
+svm-unit-test         = { path = "crates/svm-unit-test",        version = "=0.1.6" }
+svm-unit-test-macros  = { path = "crates/svm-unit-test-macros", version = "=0.1.6" }
 
 syn         = { version = "2", features = ["full", "extra-traits"] }
 quote       = "1"

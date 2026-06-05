@@ -82,6 +82,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 {pkg_name} = {{ path = "{rel_pkg}" }}
+solana-program-error = {{ version = "3", default-features = false }}
 
 [workspace]
 
@@ -145,12 +146,26 @@ static SVM_TEST_HEAP: SvmTestBumpAlloc = unsafe {{
 #[panic_handler]
 fn _svm_test_panic(_: &core::panic::PanicInfo) -> ! {{ loop {{}} }}
 
-// Lets a #[svm_test] body return either `()` (→ success, code 0) or a `u64`
-// program return code, so `#[svm_test(error = ...)]` tests can produce a
-// specific `ProgramError`.
+// Lets a #[svm_test] body return `()` (→ success, code 0), a `u64` program
+// return code, or a `Result<T, E: Into<ProgramError>>` — so an
+// `#[svm_test(error = ...)]` body can just be the fallible op itself (`Ok` →
+// success, `Err(e)` → its `ProgramError` code, which `error = <ProgramError>`
+// matches). The `Into<ProgramError>` bound means any idiomatic Solana error
+// type works with no extra impls.
 trait _SvmTestReturnCode {{ fn _svm_test_return_code(self) -> u64; }}
 impl _SvmTestReturnCode for () {{ fn _svm_test_return_code(self) -> u64 {{ 0 }} }}
 impl _SvmTestReturnCode for u64 {{ fn _svm_test_return_code(self) -> u64 {{ self }} }}
+impl<T, E: Into<solana_program_error::ProgramError>> _SvmTestReturnCode for Result<T, E> {{
+    fn _svm_test_return_code(self) -> u64 {{
+        match self {{
+            Ok(_) => 0,
+            Err(e) => {{
+                let p: solana_program_error::ProgramError = e.into();
+                p.into()
+            }}
+        }}
+    }}
+}}
 
 {source}
 

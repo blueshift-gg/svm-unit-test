@@ -25,8 +25,8 @@ mod suite;
 pub use suite::ensure_test_built;
 
 use mollusk_svm::{Mollusk, program::loader_keys::LOADER_V3, result::ProgramResult};
-use solana_instruction::Instruction;
 use solana_address::Address;
+use solana_instruction::Instruction;
 
 /// Re-exported so test files can write `#[svm_test(error = ProgramError::…)]`
 /// expectations with a single `use svm_unit_test::ProgramError;` — which the
@@ -47,7 +47,7 @@ pub enum Expect {
     /// The program must execute successfully (the default, plain `#[svm_test]`).
     Success,
     /// The program must *not* succeed — any error is accepted
-    /// (`#[svm_test(should_fail)]`).
+    /// (`#[svm_test(fail)]` or bare `#[svm_test(error)]`).
     Failure,
     /// The program must fail with exactly this `ProgramError`
     /// (`#[svm_test(error = ProgramError::Custom(1))]`).

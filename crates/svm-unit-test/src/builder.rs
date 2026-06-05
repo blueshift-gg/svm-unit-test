@@ -101,12 +101,18 @@ strip = "symbols"
 #[panic_handler]
 fn _svm_test_panic(_: &core::panic::PanicInfo) -> ! {{ loop {{}} }}
 
+// Lets a #[svm_test] body return either `()` (→ success, code 0) or a `u64`
+// program return code, so `#[svm_test(error = ...)]` tests can produce a
+// specific `ProgramError`.
+trait _SvmTestReturnCode {{ fn _svm_test_return_code(self) -> u64; }}
+impl _SvmTestReturnCode for () {{ fn _svm_test_return_code(self) -> u64 {{ 0 }} }}
+impl _SvmTestReturnCode for u64 {{ fn _svm_test_return_code(self) -> u64 {{ self }} }}
+
 {source}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
-    {name}();
-    0
+    _SvmTestReturnCode::_svm_test_return_code({name}())
 }}
 "#
     );

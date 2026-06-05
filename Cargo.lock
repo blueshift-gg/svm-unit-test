@@ -3017,6 +3017,7 @@ dependencies = [
  "quote",
  "solana-address 2.6.0",
  "solana-instruction",
+ "solana-program-error",
  "svm-unit-test-macros",
  "syn 2.0.117",
 ]

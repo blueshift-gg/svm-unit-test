@@ -78,6 +78,35 @@ cargo test
 Each `#[svm_test]` becomes a real `#[test]`. Other test attributes
 (e.g. `#[ignore]`, `#[should_panic]`) work as usual.
 
+### Asserting failures
+
+By default a test passes only if the program executes successfully. Two
+attribute arguments invert that:
+
+```rust
+use svm_unit_test::{svm_test, ProgramError};
+
+// Passes if the program returns *any* error (fails if it succeeds).
+// `fail` and a bare `error` are equivalent.
+#[svm_test(error)]
+fn rejects_garbage() {
+    let xs = black_box([1u64, 2, 3]);
+    black_box(xs[black_box(7)]); // out-of-bounds → panic → program aborts
+}
+
+// Passes only if the program fails with exactly this `ProgramError`.
+// A body returning a `u64` exits the program with that code; `6` maps to
+// `ProgramError::Custom(6)`.
+#[svm_test(error = ProgramError::Custom(6))]
+fn rejects_with_code() -> u64 {
+    6
+}
+```
+
+`ProgramError` is re-exported from `svm_unit_test`; importing it via
+`use svm_unit_test::ProgramError;` keeps it out of the compiled SBPF program
+(the suite parser strips `svm_unit_test` imports).
+
 ## How it works
 
 1. The `#[svm_test]` proc macro emits a `#[test]` that, on first run in

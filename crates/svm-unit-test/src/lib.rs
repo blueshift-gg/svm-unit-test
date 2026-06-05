@@ -24,9 +24,15 @@ pub(crate) mod builder;
 mod suite;
 pub use suite::ensure_test_built;
 
-use mollusk_svm::{Mollusk, program::loader_keys::LOADER_V3};
+use mollusk_svm::{Mollusk, program::loader_keys::LOADER_V3, result::ProgramResult};
 use solana_instruction::Instruction;
 use solana_address::Address;
+
+/// Re-exported so test files can write `#[svm_test(error = ProgramError::…)]`
+/// expectations with a single `use svm_unit_test::ProgramError;` — which the
+/// suite parser strips from the SBPF crate (it only keeps non-`svm_unit_test`
+/// `use`s), so it never leaks into the on-chain build.
+pub use solana_program_error::ProgramError;
 
 #[derive(Debug, Clone)]
 pub struct RunReport {
@@ -35,10 +41,30 @@ pub struct RunReport {
     pub execution_time_us: u64,
 }
 
+/// What a `#[svm_test]` expects the program's result to be.
+#[derive(Debug, Clone)]
+pub enum Expect {
+    /// The program must execute successfully (the default, plain `#[svm_test]`).
+    Success,
+    /// The program must *not* succeed — any error is accepted
+    /// (`#[svm_test(should_fail)]`).
+    Failure,
+    /// The program must fail with exactly this `ProgramError`
+    /// (`#[svm_test(error = ProgramError::Custom(1))]`).
+    Error(ProgramError),
+}
+
 /// Load `elf` into a fresh Mollusk instance, invoke the entrypoint with empty
 /// instruction data, and report compute units consumed. Panics on program
 /// failure.
 pub fn run(name: &str, elf: &[u8]) -> RunReport {
+    run_expecting(name, elf, Expect::Success)
+}
+
+/// Like [`run`], but assert the program's outcome matches `expect`. Panics
+/// (failing the `#[test]`) when the actual result diverges from the
+/// expectation.
+pub fn run_expecting(name: &str, elf: &[u8], expect: Expect) -> RunReport {
     let program_id = Address::new_unique();
 
     let mut mollusk = Mollusk::default();
@@ -47,11 +73,30 @@ pub fn run(name: &str, elf: &[u8]) -> RunReport {
     let instruction = Instruction::new_with_bytes(program_id, &[], vec![]);
     let result = mollusk.process_instruction(&instruction, &[]);
 
-    if !result.program_result.is_ok() {
-        panic!(
-            "svm_test `{name}` program failed: {:?} (CUs consumed before failure: {})",
-            result.program_result, result.compute_units_consumed,
-        );
+    match expect {
+        Expect::Success => {
+            if !result.program_result.is_ok() {
+                panic!(
+                    "svm_test `{name}` program failed: {:?} (CUs consumed before failure: {})",
+                    result.program_result, result.compute_units_consumed,
+                );
+            }
+        }
+        Expect::Failure => {
+            if result.program_result.is_ok() {
+                panic!(
+                    "svm_test `{name}` expected the program to fail, but it succeeded (CUs consumed: {})",
+                    result.compute_units_consumed,
+                );
+            }
+        }
+        Expect::Error(expected) => match &result.program_result {
+            ProgramResult::Failure(got) if *got == expected => {}
+            other => panic!(
+                "svm_test `{name}` expected program error {expected:?}, but got {other:?} (CUs consumed: {})",
+                result.compute_units_consumed,
+            ),
+        },
     }
 
     let report = RunReport {

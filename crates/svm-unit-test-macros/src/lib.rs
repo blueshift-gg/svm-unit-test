@@ -17,23 +17,90 @@
 //!     black_box(Curve::add_mod_n(black_box(&SCALAR_A), black_box(&SCALAR_B)));
 //! }
 //! ```
+//!
+//! By default the test passes only if the program executes successfully. Two
+//! attribute arguments invert that:
+//!
+//! ```ignore
+//! use svm_unit_test::{svm_test, ProgramError};
+//!
+//! // Passes if the program returns *any* error (fails if it succeeds).
+//! // `fail` and a bare `error` are equivalent.
+//! #[svm_test(fail)]
+//! fn rejects_garbage() { /* … */ }
+//!
+//! // Passes only if the program fails with exactly this `ProgramError`.
+//! #[svm_test(error = ProgramError::Custom(1))]
+//! fn rejects_with_code() { /* … */ }
+//! ```
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{ItemFn, parse_macro_input};
+use syn::{
+    Expr, ItemFn, Token,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+};
+
+/// Parsed form of the `#[svm_test(...)]` attribute arguments.
+enum Expectation {
+    /// Plain `#[svm_test]` — the program must succeed.
+    Success,
+    /// `#[svm_test(fail)]` or bare `#[svm_test(error)]` — the program must
+    /// return some error.
+    Failure,
+    /// `#[svm_test(error = <expr>)]` — the program must fail with this error.
+    Error(Expr),
+}
+
+impl Parse for Expectation {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Expectation::Success);
+        }
+        let ident: syn::Ident = input.parse()?;
+        match ident.to_string().as_str() {
+            "fail" => Ok(Expectation::Failure),
+            // `error` is overloaded: bare `error` accepts any failure, while
+            // `error = <expr>` pins the exact `ProgramError`.
+            "error" => {
+                if input.parse::<Token![=]>().is_ok() {
+                    Ok(Expectation::Error(input.parse()?))
+                } else {
+                    Ok(Expectation::Failure)
+                }
+            }
+            other => Err(syn::Error::new(
+                ident.span(),
+                format!(
+                    "unknown `svm_test` argument `{other}`; expected nothing, \
+                     `fail`, `error`, or `error = <ProgramError expression>`"
+                ),
+            )),
+        }
+    }
+}
 
 #[proc_macro_attribute]
-pub fn svm_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn svm_test(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let expectation = parse_macro_input!(attr as Expectation);
     let func = parse_macro_input!(item as ItemFn);
     let name = &func.sig.ident;
     let name_str = name.to_string();
     let block = &func.block;
     let attrs = &func.attrs;
+    let output = &func.sig.output;
     let body_fn = format_ident!("_svm_test_body_{}", name);
+
+    let expect = match expectation {
+        Expectation::Success => quote! { ::svm_unit_test::Expect::Success },
+        Expectation::Failure => quote! { ::svm_unit_test::Expect::Failure },
+        Expectation::Error(err) => quote! { ::svm_unit_test::Expect::Error(#err) },
+    };
 
     quote! {
         #[allow(dead_code)]
-        fn #body_fn() {
+        fn #body_fn() #output {
             #block
         }
 
@@ -49,7 +116,7 @@ pub fn svm_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
             );
             let elf = ::std::fs::read(so_path)
                 .unwrap_or_else(|e| ::std::panic!("read {}: {}", so_path.display(), e));
-            ::svm_unit_test::run(#name_str, &elf);
+            ::svm_unit_test::run_expecting(#name_str, &elf, #expect);
         }
     }
     .into()

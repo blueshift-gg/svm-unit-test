@@ -18,8 +18,8 @@
 //! }
 //! ```
 //!
-//! By default the test passes only if the program executes successfully. Two
-//! attribute arguments invert that:
+//! By default the test passes only if the program executes successfully. Three
+//! attribute forms invert that:
 //!
 //! ```ignore
 //! use svm_unit_test::{svm_test, ProgramError};
@@ -30,9 +30,16 @@
 //! fn rejects_garbage() { /* … */ }
 //!
 //! // Passes only if the program fails with exactly this `ProgramError`.
+//! // The body returns a `u64` exit code; small codes map to
+//! // `ProgramError::Custom(n)`.
 //! #[svm_test(error = ProgramError::Custom(1))]
-//! fn rejects_with_code() { /* … */ }
+//! fn rejects_with_code() -> u64 { 1 }
 //! ```
+//!
+//! A body must return `()` (success) or a `u64` exit code. The code is run
+//! through Solana's `u64 → ProgramError` mapping, so `error = Custom(n)` is
+//! the practically matchable form; builtin variants encode to `n << 32` and
+//! need their encoded `u64` returned explicitly.
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};

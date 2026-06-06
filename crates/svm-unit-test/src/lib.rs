@@ -55,8 +55,9 @@ pub enum Expect {
 }
 
 /// Load `elf` into a fresh Mollusk instance, invoke the entrypoint with empty
-/// instruction data, and report compute units consumed. Panics on program
-/// failure.
+/// instruction data, and report compute units consumed. Asserts the program
+/// succeeds — a thin wrapper over [`run_expecting`] with [`Expect::Success`];
+/// panics on program failure.
 pub fn run(name: &str, elf: &[u8]) -> RunReport {
     run_expecting(name, elf, Expect::Success)
 }

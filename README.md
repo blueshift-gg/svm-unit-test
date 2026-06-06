@@ -80,15 +80,15 @@ Each `#[svm_test]` becomes a real `#[test]`. Other test attributes
 
 ### Asserting failures
 
-By default a test passes only if the program executes successfully. Two
-attribute arguments invert that:
+By default a test passes only if the program executes successfully. Three
+attribute forms invert that:
 
 ```rust
 use svm_unit_test::{svm_test, ProgramError};
 
 // Passes if the program returns *any* error (fails if it succeeds).
 // `fail` and a bare `error` are equivalent.
-#[svm_test(error)]
+#[svm_test(fail)]
 fn rejects_garbage() {
     let xs = black_box([1u64, 2, 3]);
     black_box(xs[black_box(7)]); // out-of-bounds → panic → program aborts
@@ -102,6 +102,14 @@ fn rejects_with_code() -> u64 {
     6
 }
 ```
+
+A `#[svm_test]` body must return either `()` (success) or a `u64` exit code.
+Because the exit code is interpreted by Solana's `u64 → ProgramError`
+mapping, a small code maps to `ProgramError::Custom(n)` — so in practice
+`error = ProgramError::Custom(n)` is the matchable form. Builtin variants
+(`InvalidArgument`, etc.) encode to `n << 32` and aren't reachable from a
+plain small return code; if you need to assert one, return its encoded `u64`.
+Use bare `error` / `fail` when you only care *that* it failed.
 
 `ProgramError` is re-exported from `svm_unit_test`; importing it via
 `use svm_unit_test::ProgramError;` keeps it out of the compiled SBPF program

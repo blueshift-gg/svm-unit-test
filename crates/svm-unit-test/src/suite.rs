@@ -53,7 +53,7 @@ pub fn ensure_test_built(
             .clone()
     };
 
-    *cell.get_or_init(|| {
+    cell.get_or_init(|| {
         let parsed = parse_file_cached(file, manifest_dir);
         let path = crate::builder::build_one_test(
             &parsed.cleaned_source,
@@ -83,7 +83,7 @@ fn parse_file_cached(file: &'static str, manifest_dir: &str) -> &'static ParsedF
             .clone()
     };
 
-    *cell.get_or_init(|| {
+    cell.get_or_init(|| {
         let abs = resolve_source_path(manifest_dir, file);
         let source = fs::read_to_string(&abs)
             .unwrap_or_else(|e| panic!("svm_test: read {}: {e}", abs.display()));

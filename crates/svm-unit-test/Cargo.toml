@@ -4,7 +4,7 @@ version.workspace    = true
 edition.workspace    = true
 license.workspace    = true
 repository.workspace = true
-description = "Run #[svm_unit_test] functions as compiled SBPF programs in Mollusk and report compute-unit usage."
+description = "Run #[svm_test] functions as compiled SBPF programs in Mollusk and report compute-unit usage."
 readme      = "../../README.md"
 keywords    = ["solana", "sbpf", "svm", "mollusk", "test"]
 categories  = ["development-tools::testing", "development-tools::profiling"]
@@ -19,7 +19,7 @@ solana-program-error.workspace = true
 pathdiff.workspace = true
 
 # Used at test runtime to parse the test file picked up via file!() and
-# discover sibling #[svm_unit_test] fns + their use statements. Test-only —
+# discover sibling #[svm_test] fns + their use statements. Test-only —
 # not shipped by the user.
 syn.workspace = true
 quote.workspace = true

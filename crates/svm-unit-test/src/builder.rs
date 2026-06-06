@@ -295,10 +295,10 @@ fn walk_files(dir: &Path, cb: &mut dyn FnMut(&Path)) {
 /// Write `contents` to `path` only if it would change. Avoids bumping
 /// mtime on no-op runs (which would defeat our `needs_rebuild` check).
 fn write_if_changed(path: &Path, contents: &str) {
-    if let Ok(existing) = fs::read_to_string(path) {
-        if existing == contents {
-            return;
-        }
+    if let Ok(existing) = fs::read_to_string(path)
+        && existing == contents
+    {
+        return;
     }
     fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }

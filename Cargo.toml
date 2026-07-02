@@ -10,7 +10,7 @@ exclude = [
 ]
 
 [workspace.package]
-version    = "0.1.8"
+version    = "0.1.9"
 edition    = "2024"
 license    = "MIT"
 repository = "https://github.com/blueshift-gg/svm-unit-test"
@@ -22,14 +22,14 @@ repository = "https://github.com/blueshift-gg/svm-unit-test"
 # free to pair a fresh runtime with a stale published macros (or vice versa)
 # and you get "cannot find function `…`" errors in macro-expanded code.
 # Bump these in lockstep with workspace.package.version on every release.
-svm-unit-test         = { path = "crates/svm-unit-test",        version = "=0.1.8" }
-svm-unit-test-macros  = { path = "crates/svm-unit-test-macros", version = "=0.1.8" }
+svm-unit-test         = { path = "crates/svm-unit-test",        version = "=0.1.9" }
+svm-unit-test-macros  = { path = "crates/svm-unit-test-macros", version = "=0.1.9" }
 
 syn         = { version = "2", features = ["full", "extra-traits"] }
 quote       = "1"
 proc-macro2 = "1"
 
-mollusk-svm       = "0.13"
+mollusk-svm       = "0.13.4"
 solana-address     = "2.6"
 solana-instruction = "3"
 solana-program-error = "3"

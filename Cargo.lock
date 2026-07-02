@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "curve-bench"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "svm-unit-test",
 ]
@@ -1320,9 +1320,9 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "mollusk-svm"
-version = "0.13.1"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a40ed0975036e96eb343c4da34193d53bcdbcdad6415523c666bcc85ffc5395"
+checksum = "fad83a73c151ce703f9dbccf0500e654fc017f4b2467d35bbb3e528c971f7911"
 dependencies = [
  "agave-syscalls",
  "bincode",
@@ -1364,9 +1364,9 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-error"
-version = "0.13.1"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17e39e46139ca095fd0f0fdc8a86c754c25f90442d45935f9f53dcc27e8b9f0b"
+checksum = "868a38efcf2997cce1d5ae8fdf0ae8e0e51e7489d1f75c366322a4b0ce3ac6d9"
 dependencies = [
  "solana-pubkey 4.1.0",
  "thiserror 2.0.18",
@@ -1374,9 +1374,9 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-result"
-version = "0.13.1"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f7e2ab13fca35c9602f32053ef23ee5b63dd99b035d5342ab4cf5c239c813bd"
+checksum = "86282f1a0a55a9a309a3905bbe989ec2eb78567fd98470af5918f3a318a87a32"
 dependencies = [
  "solana-account",
  "solana-instruction",
@@ -2919,7 +2919,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svm-unit-test"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "mollusk-svm",
  "pathdiff",
@@ -2933,7 +2933,7 @@ dependencies = [
 
 [[package]]
 name = "svm-unit-test-macros"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "proc-macro2",
  "quote",

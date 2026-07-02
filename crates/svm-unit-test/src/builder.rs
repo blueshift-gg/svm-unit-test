@@ -187,6 +187,11 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
 
     let status = Command::new("cargo")
         .arg("build-sbf")
+        // Emit an SBPF v3 program. `build-sbf` defaults to `--arch v0`; v3 is
+        // the current on-chain target and is what Mollusk (>= 0.13.4) executes
+        // under LOADER_V3.
+        .arg("--arch")
+        .arg("v3")
         .arg("--manifest-path")
         .arg(&manifest)
         .arg("--sbf-out-dir")

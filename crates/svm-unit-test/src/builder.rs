@@ -178,12 +178,12 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
     write_if_changed(&crate_dir.join("src").join("lib.rs"), &lib_rs);
 
     let so_path = so_dir.join(format!("{name}.so"));
-    if !needs_rebuild(&so_path, &crate_dir, pkg_path) {
+    let target_dir = crate_dir.join("target");
+    if !needs_rebuild(&so_path, &crate_dir, pkg_path, &target_dir, &crate_name) {
         return;
     }
 
     let manifest = crate_dir.join("Cargo.toml");
-    let target_dir = crate_dir.join("target");
 
     let status = Command::new("cargo")
         .arg("build-sbf")
@@ -236,14 +236,23 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {{
 /// own fingerprint check with mtimes:
 ///   * the `.so` must exist;
 ///   * the generated Cargo.toml + lib.rs must not be newer than it;
-///   * nothing in the user's package source tree (Cargo.toml + src/**) may
-///     be newer than it.
+///   * the user's package Cargo.toml must not be newer than it;
+///   * no file the last build read may be newer than it, or gone. Those are
+///     the ones cargo lists in the dep-info (`<crate>.d`) beside the build: the
+///     user's sources and every path dependency's (the lib under test, sibling
+///     workspace crates), and files pulled in by `include_bytes!` and friends.
 ///
-/// Misses transitive dep changes that cargo would catch (e.g. a Cargo.lock
-/// bump in another workspace member). For those, run `cargo clean` or just
-/// touch the test file. The trade-off pays for itself: the no-op path drops
-/// from a multi-hundred-ms `cargo build-sbf` spawn to a few stat() calls.
-fn needs_rebuild(so_path: &Path, crate_dir: &Path, pkg_path: &Path) -> bool {
+/// Still misses a dependency *version* change (a Cargo.lock bump in another
+/// workspace member); for that, touch the test file or `cargo clean`. The
+/// no-op path stays a few hundred stat() calls instead of a multi-hundred-ms
+/// `cargo build-sbf` spawn.
+fn needs_rebuild(
+    so_path: &Path,
+    crate_dir: &Path,
+    pkg_path: &Path,
+    target_dir: &Path,
+    crate_name: &str,
+) -> bool {
     let Some(so_mtime) = mtime(so_path) else {
         return true;
     };
@@ -251,50 +260,70 @@ fn needs_rebuild(so_path: &Path, crate_dir: &Path, pkg_path: &Path) -> bool {
     for f in [
         crate_dir.join("Cargo.toml"),
         crate_dir.join("src").join("lib.rs"),
+        pkg_path.join("Cargo.toml"),
     ] {
         if mtime(&f).is_some_and(|m| m > so_mtime) {
             return true;
         }
     }
 
-    if mtime(&pkg_path.join("Cargo.toml")).is_some_and(|m| m > so_mtime) {
+    // A build from before dep-info was read (or one that never finished):
+    // rebuild once rather than guess.
+    let Some(inputs) = build_inputs(target_dir, crate_name) else {
         return true;
-    }
+    };
+    inputs.iter().any(|f| mtime(f).is_none_or(|m| m > so_mtime))
+}
 
-    let src = pkg_path.join("src");
-    if newest_mtime_under(&src).is_some_and(|m| m > so_mtime) {
-        return true;
+/// The files the last build of `crate_name` read, from the dep-info cargo
+/// writes at `<target>/<triple>/release/<crate_name>.d`.
+fn build_inputs(target_dir: &Path, crate_name: &str) -> Option<Vec<PathBuf>> {
+    for triple in fs::read_dir(target_dir).ok()?.flatten() {
+        let d = triple
+            .path()
+            .join("release")
+            .join(format!("{crate_name}.d"));
+        if let Ok(text) = fs::read_to_string(&d) {
+            return Some(parse_dep_info(&text));
+        }
     }
+    None
+}
 
-    false
+/// The prerequisites of a Makefile-style dep-info file's first rule:
+/// `out: a b\ c` gives `a` and `b c` (a space in a path is `\ `).
+fn parse_dep_info(text: &str) -> Vec<PathBuf> {
+    let line = text.lines().next().unwrap_or("");
+    // The target is a path too and may contain `:` (`C:\…`); the separator
+    // is the first `: `.
+    let Some((_, deps)) = line.split_once(": ") else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    let mut cur = String::new();
+    let mut chars = deps.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&' ') => {
+                cur.push(' ');
+                chars.next();
+            }
+            ' ' => {
+                if !cur.is_empty() {
+                    files.push(PathBuf::from(std::mem::take(&mut cur)));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        files.push(PathBuf::from(cur));
+    }
+    files
 }
 
 fn mtime(p: &Path) -> Option<SystemTime> {
     p.metadata().ok()?.modified().ok()
-}
-
-fn newest_mtime_under(dir: &Path) -> Option<SystemTime> {
-    let mut newest: Option<SystemTime> = None;
-    walk_files(dir, &mut |path| {
-        if let Some(m) = mtime(path) {
-            newest = Some(newest.map_or(m, |n| n.max(m)));
-        }
-    });
-    newest
-}
-
-fn walk_files(dir: &Path, cb: &mut dyn FnMut(&Path)) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_files(&path, cb);
-        } else {
-            cb(&path);
-        }
-    }
 }
 
 /// Write `contents` to `path` only if it would change. Avoids bumping
@@ -306,4 +335,80 @@ fn write_if_changed(path: &Path, contents: &str) {
         return;
     }
     fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dep_info_lists_the_first_rules_prerequisites() {
+        let text = "/t/x.so: /a/src/lib.rs /b/my\\ dir/f.bin /c/lib.rs\n\n/a/src/lib.rs:\n";
+        assert_eq!(
+            parse_dep_info(text),
+            [
+                PathBuf::from("/a/src/lib.rs"),
+                PathBuf::from("/b/my dir/f.bin"),
+                PathBuf::from("/c/lib.rs"),
+            ]
+        );
+        assert!(parse_dep_info("").is_empty());
+    }
+
+    #[test]
+    fn a_changed_path_dependency_rebuilds() {
+        let dir = std::env::temp_dir().join(format!("svm-unit-test-dep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let crate_dir = dir.join("build/t");
+        let release = crate_dir.join("target/sbpfv3-solana-solana/release");
+        let pkg = dir.join("pkg");
+        let dep = dir.join("dep/src/lib.rs");
+        for d in [
+            crate_dir.join("src"),
+            release.clone(),
+            pkg.clone(),
+            dep.parent().unwrap().into(),
+        ] {
+            fs::create_dir_all(d).unwrap();
+        }
+        for f in [
+            crate_dir.join("Cargo.toml"),
+            crate_dir.join("src/lib.rs"),
+            pkg.join("Cargo.toml"),
+        ] {
+            fs::write(f, "").unwrap();
+        }
+        fs::write(&dep, "").unwrap();
+        let so = dir.join("t.so");
+        // What a build does: write the dep-info, then the .so.
+        let build = || {
+            fs::write(
+                release.join("svm_test_t.d"),
+                format!("{}: {}\n", so.display(), dep.display()),
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            fs::write(&so, "").unwrap();
+        };
+        let stale = || {
+            needs_rebuild(
+                &so,
+                &crate_dir,
+                &pkg,
+                &crate_dir.join("target"),
+                "svm_test_t",
+            )
+        };
+
+        assert!(stale(), "no .so yet");
+        build();
+        assert!(!stale(), "nothing changed");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&dep, "changed").unwrap();
+        assert!(stale(), "a path dependency changed");
+        build();
+        fs::remove_file(&dep).unwrap();
+        assert!(stale(), "a file the build read is gone");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
